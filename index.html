@@ -537,14 +537,13 @@
                     }
                 };
 
-                // 7-day forecast
-                const daily = data.daily;
+                // 7-day forecast (wttr.in uses 'weather' array, not 'daily')
                 const forecastData = {
                     daily: {
-                        time: daily.time,
-                        weather_code: daily.weatherCode.map(Number),
-                        temperature_2m_max: daily.maxtempC.map(Number),
-                        temperature_2m_min: daily.mintempC.map(Number)
+                        time: data.weather.map(w => w.date),
+                        weather_code: data.weather.map(w => parseInt(w.weatherCode)),
+                        temperature_2m_max: data.weather.map(w => parseFloat(w.maxtempC)),
+                        temperature_2m_min: data.weather.map(w => parseFloat(w.mintempC))
                     }
                 };
 
