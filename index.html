@@ -465,51 +465,90 @@
             });
         }
 
-        // Search city name
+        // Search city name - uses wttr.in which supports CORS
         async function searchCity(query) {
+            // wttr.in returns JSON with geolocation data
             const res = await fetch(
-                `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=1`
+                `https://wttr.in/${encodeURIComponent(query)}?format=j1`,
+                { headers: { 'Accept': 'application/json' } }
             );
-            const results = await res.json();
-            if (results.length === 0) throw new Error('Location not found');
-            return { lat: parseFloat(results[0].lat), lon: parseFloat(results[0].lon), name: results[0].display_name.split(',')[0] };
+            if (!res.ok) throw new Error('Location not found');
+            const data = await res.json();
+            if (!data.nearest_area || data.nearest_area.length === 0) {
+                throw new Error('Location not found');
+            }
+            const area = data.nearest_area[0];
+            return {
+                lat: parseFloat(area.latitude),
+                lon: parseFloat(area.longitude),
+                name: area.areaName[0].value
+            };
         }
 
         // Fetch weather data
         async function fetchWeather(lat, lon) {
             const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}`
-                + `&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,weather_code,wind_speed_10m,uvi_display`
+                + `&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,weather_code,wind_speed_10m`
                 + `&daily=weather_code,temperature_2m_min,temperature_2m_max`
                 + `&timezone=auto&forecast_days=7`;
 
             const res = await fetch(url);
-            if (!res.ok) throw new Error('Failed to fetch weather data');
+            if (!res.ok) {
+                const errText = await res.text();
+                throw new Error(`Weather API error: ${res.status} - ${errText}`);
+            }
             return res.json();
         }
 
-        // Main fetch
+        // Main fetch - uses wttr.in which supports CORS (no proxy needed)
         async function loadWeather(lat, lon) {
             output.innerHTML = '<p class="message">Loading weather data...</p>';
 
             try {
-                // Reverse geocode
-                const geoRes = await fetch(
-                    `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=10`
-                );
-                const geo = await geoRes.json();
-                const city = geo.address.city || geo.address.town || geo.address.village || geo.address.county || 'Your Location';
+                // Use wttr.in which supports CORS — returns all data in one call
+                const url = `https://wttr.in/?format=j1&lang=en`;
+                const res = await fetch(url);
+                if (!res.ok) throw new Error('Failed to fetch weather data');
+                const data = await res.json();
 
-                // Fetch weather
-                const forecast = await fetchWeather(lat, lon);
-                const current = forecast.current;
+                // Extract city name from area
+                const area = data.nearest_area && data.nearest_area.length > 0
+                    ? data.nearest_area[0].areaName[0].value
+                    : 'Your Location';
 
-                // Build current data object with timezone
+                // Current weather
+                const current = data.current_condition[0];
+                const tempC = parseFloat(current.temp_C);
+                const feelsLikeC = parseFloat(current.FeelsLikeC);
+                const humidity = parseInt(current.humidity);
+                const windKmh = parseInt(current.windspeedKmph);
+                const weatherCode = parseInt(current.weatherCode);
+                const description = current.lang_en ? current.lang_en[0].value : current.weatherDesc[0].value;
+
+                // Build current data object
                 const currentData = {
-                    ...current,
-                    current: current
+                    current: {
+                        temperature_2m: tempC,
+                        apparent_temperature: feelsLikeC,
+                        relative_humidity_2m: humidity,
+                        wind_speed_10m: windKmh,
+                        weather_code: weatherCode,
+                        is_day: parseInt(current.is_day)
+                    }
                 };
 
-                render(city, currentData, forecast);
+                // 7-day forecast
+                const daily = data.daily;
+                const forecastData = {
+                    daily: {
+                        time: daily.time,
+                        weather_code: daily.weatherCode.map(Number),
+                        temperature_2m_max: daily.maxtempC.map(Number),
+                        temperature_2m_min: daily.mintempC.map(Number)
+                    }
+                };
+
+                render(area, currentData, forecastData);
             } catch (err) {
                 output.innerHTML = `<p class="message error">Error: ${err.message}</p>`;
             }
