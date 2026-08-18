@@ -54,6 +54,7 @@
             justify-content: center;
             margin-bottom: 30px;
             flex-wrap: wrap;
+            position: relative;
         }
 
         .location-bar input {
@@ -87,6 +88,43 @@
 
         .location-bar button:hover {
             background: rgba(255,255,255,0.4);
+        }
+
+        /* Autocomplete dropdown */
+        .autocomplete-list {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: rgba(255,255,255,0.2);
+            backdrop-filter: blur(15px);
+            border-radius: 0 0 12px 12px;
+            overflow: hidden;
+            z-index: 100;
+            max-height: 200px;
+            overflow-y: auto;
+            display: none;
+        }
+
+        .autocomplete-list.show {
+            display: block;
+        }
+
+        .autocomplete-item {
+            padding: 10px 16px;
+            cursor: pointer;
+            transition: background 0.2s;
+            font-size: 0.9rem;
+        }
+
+        .autocomplete-item:hover,
+        .autocomplete-item.active {
+            background: rgba(255,255,255,0.3);
+        }
+
+        .autocomplete-item .country {
+            font-size: 0.8rem;
+            opacity: 0.7;
         }
 
         /* Loading & error */
@@ -280,7 +318,8 @@
         </header>
 
         <div class="location-bar">
-            <input type="text" id="searchInput" placeholder="Search city or zip code..." />
+            <input type="text" id="searchInput" placeholder="Search city or zip code..." autocomplete="off" />
+            <div id="autocompleteList" class="autocomplete-list"></div>
             <button id="searchBtn">Search</button>
             <button id="geoBtn">📍 Use My Location</button>
         </div>
@@ -299,12 +338,15 @@
         let useCelsius = true;
         let currentLat = null;
         let currentLon = null;
+        let autocompleteTimeout = null;
+        let activeAutocompleteIndex = -1;
 
         // DOM refs
         const output = document.getElementById('output');
         const searchInput = document.getElementById('searchInput');
         const searchBtn = document.getElementById('searchBtn');
         const geoBtn = document.getElementById('geoBtn');
+        const autocompleteList = document.getElementById('autocompleteList');
 
         // Weather code to icon mapping (WMO codes)
         const weatherIcons = {
@@ -492,6 +534,83 @@
             };
         }
 
+        // Autocomplete: search for city suggestions
+        async function getAutocompleteSuggestions(query) {
+            if (!query || query.length < 2) return [];
+            
+            try {
+                const res = await fetch(
+                    `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&addressdetails=1`,
+                    { headers: { 'User-Agent': 'WeatherApp/1.0' } }
+                );
+                if (!res.ok) return [];
+                const data = await res.json();
+                
+                return data.map(item => ({
+                    lat: parseFloat(item.lat),
+                    lon: parseFloat(item.lon),
+                    name: item.display_name.split(',')[0],
+                    country: item.address.country || ''
+                }));
+            } catch (err) {
+                return [];
+            }
+        }
+
+        // Show autocomplete suggestions
+        function showAutocomplete(suggestions) {
+            autocompleteList.innerHTML = '';
+            
+            if (suggestions.length === 0) {
+                autocompleteList.classList.remove('show');
+                return;
+            }
+
+            suggestions.forEach((suggestion, index) => {
+                const item = document.createElement('div');
+                item.className = 'autocomplete-item';
+                item.innerHTML = `
+                    <div>${suggestion.name}</div>
+                    <div class="country">${suggestion.country}</div>
+                `;
+                item.addEventListener('click', () => {
+                    searchInput.value = suggestion.name;
+                    autocompleteList.classList.remove('show');
+                    activeAutocompleteIndex = -1;
+                    performSearch(suggestion.lat, suggestion.lon, suggestion.name);
+                });
+                autocompleteList.appendChild(item);
+            });
+
+            autocompleteList.classList.add('show');
+        }
+
+        // Hide autocomplete
+        function hideAutocomplete() {
+            autocompleteList.classList.remove('show');
+            activeAutocompleteIndex = -1;
+        }
+
+        // Perform search with location
+        async function performSearch(lat, lon, cityName) {
+            output.innerHTML = '<p class="message">Loading weather data...</p>';
+
+            try {
+                const url = `https://wttr.in/${lat},${lon}?format=j1&lang=en`;
+                const res = await fetch(url);
+                if (!res.ok) throw new Error('Failed to fetch weather data');
+                const data = await res.json();
+
+                const city = cityName || (data.nearest_area && data.nearest_area.length > 0
+                    ? data.nearest_area[0].areaName[0].value
+                    : 'Your Location');
+
+                render(city, data);
+            } catch (err) {
+                output.innerHTML = `<p class="message error">Error: ${err.message}</p>`;
+            }
+        }
+
         // Load weather for location
         async function loadWeather(lat, lon) {
             output.innerHTML = '<p class="message">Loading weather data...</p>';
@@ -502,7 +621,6 @@
                 if (!res.ok) throw new Error('Failed to fetch weather data');
                 const data = await res.json();
 
-                // Extract city name
                 const city = data.nearest_area && data.nearest_area.length > 0
                     ? data.nearest_area[0].areaName[0].value
                     : 'Your Location';
@@ -512,6 +630,57 @@
                 output.innerHTML = `<p class="message error">Error: ${err.message}</p>`;
             }
         }
+
+        // Autocomplete event handler
+        searchInput.addEventListener('input', (e) => {
+            const query = e.target.value.trim();
+            
+            clearTimeout(autocompleteTimeout);
+            
+            if (query.length < 2) {
+                hideAutocomplete();
+                return;
+            }
+
+            autocompleteTimeout = setTimeout(async () => {
+                const suggestions = await getAutocompleteSuggestions(query);
+                showAutocomplete(suggestions);
+            }, 300);
+        });
+
+        // Handle keyboard navigation in autocomplete
+        searchInput.addEventListener('keydown', (e) => {
+            const items = autocompleteList.querySelectorAll('.autocomplete-item');
+            
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                activeAutocompleteIndex = Math.min(activeAutocompleteIndex + 1, items.length - 1);
+                updateActiveAutocompleteItem(items);
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                activeAutocompleteIndex = Math.max(activeAutocompleteIndex - 1, 0);
+                updateActiveAutocompleteItem(items);
+            } else if (e.key === 'Enter' && activeAutocompleteIndex >= 0) {
+                e.preventDefault();
+                const selected = items[activeAutocompleteIndex];
+                if (selected) selected.click();
+            } else if (e.key === 'Escape') {
+                hideAutocomplete();
+            }
+        });
+
+        function updateActiveAutocompleteItem(items) {
+            items.forEach((item, index) => {
+                item.classList.toggle('active', index === activeAutocompleteIndex);
+            });
+        }
+
+        // Close autocomplete when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!searchInput.contains(e.target) && !autocompleteList.contains(e.target)) {
+                hideAutocomplete();
+            }
+        });
 
         // Geolocation handler
         geoBtn.addEventListener('click', () => {
@@ -542,7 +711,12 @@
 
         // Search handler
         searchBtn.addEventListener('click', handleSearch);
-        searchInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') handleSearch(); });
+        searchInput.addEventListener('keypress', (e) => { 
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                handleSearch();
+            } 
+        });
 
         async function handleSearch() {
             const query = searchInput.value.trim();
@@ -551,12 +725,13 @@
             output.innerHTML = '<p class="message">Searching...</p>';
             searchInput.disabled = true;
             searchBtn.disabled = true;
+            hideAutocomplete();
 
             try {
                 const loc = await searchCity(query);
                 currentLat = loc.lat;
                 currentLon = loc.lon;
-                await loadWeather(currentLat, currentLon);
+                await performSearch(currentLat, currentLon, loc.name);
             } catch (err) {
                 output.innerHTML = `<p class="message error">${err.message}</p>`;
             } finally {
