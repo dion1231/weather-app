@@ -176,7 +176,7 @@
             margin-top: 3px;
         }
 
-        /* 7-day forecast */
+        /* 3-day forecast */
         .forecast-title {
             font-size: 1.1rem;
             font-weight: 600;
@@ -290,7 +290,7 @@
         </div>
 
         <footer>
-            Powered by Open-Meteo & Nominatim (free, no API key)
+            Powered by wttr.in (free, no API key)
         </footer>
     </div>
 
@@ -299,7 +299,6 @@
         let useCelsius = true;
         let currentLat = null;
         let currentLon = null;
-        let currentCity = '';
 
         // DOM refs
         const output = document.getElementById('output');
@@ -368,11 +367,9 @@
         }
 
         // Set background based on weather
-        function setBackground(code, isDay) {
+        function setBackground(code) {
             const body = document.body;
             body.className = 'default';
-
-            if (!isDay) { body.classList.add('night'); return; }
 
             if (code === 0 || code === 1) body.classList.add('sunny');
             else if (code >= 2 && code <= 3) body.classList.add('cloudy');
@@ -383,14 +380,24 @@
             else body.classList.add('default');
         }
 
+        // Parse weather description to get a WMO code
+        function parseWeatherCode(weatherDesc) {
+            const desc = (weatherDesc || '').toLowerCase();
+            if (desc.includes('thunder')) return 95;
+            if (desc.includes('snow') || desc.includes('blizzard')) return 73;
+            if (desc.includes('rain') || desc.includes('shower')) return 63;
+            if (desc.includes('cloud') || desc.includes('overcast')) return 3;
+            if (desc.includes('fog') || desc.includes('mist')) return 45;
+            return 0; // Clear
+        }
+
         // Render current weather
         function renderCurrent(data, city) {
-            const now = data.current;
-            const code = now.weather_code;
-            const isDay = now.is_day;
-            const tempC = now.temperature_2m;
+            const current = data.current_condition[0];
+            const code = parseInt(current.weatherCode);
+            const tempC = parseFloat(current.temp_C);
 
-            setBackground(code, isDay);
+            setBackground(code);
 
             return `
                 <div class="current-weather">
@@ -404,35 +411,36 @@
                     <div class="details">
                         <div class="detail-item">
                             <div class="detail-label">Feels Like</div>
-                            <div class="detail-value">${displayTemp(data.current.apparent_temperature)}</div>
+                            <div class="detail-value">${displayTemp(parseFloat(current.FeelsLikeC))}</div>
                         </div>
                         <div class="detail-item">
                             <div class="detail-label">Humidity</div>
-                            <div class="detail-value">${data.current.relative_humidity_2m}%</div>
+                            <div class="detail-value">${current.humidity}%</div>
                         </div>
                         <div class="detail-item">
                             <div class="detail-label">Wind</div>
-                            <div class="detail-value">${displayWind(data.current.wind_speed_10m)}</div>
-                        </div>
-                        <div class="detail-item">
-                            <div class="detail-label">UV Index</div>
-                            <div class="detail-value">${data.current.uvi_display ? Math.round(data.current.uvi_display) : '—'}</div>
+                            <div class="detail-value">${displayWind(parseInt(current.windspeedKmph))}</div>
                         </div>
                     </div>
                 </div>
             `;
         }
 
-        // Render 7-day forecast
+        // Render 3-day forecast
         function renderForecast(data) {
-            const daily = data.daily;
+            const daily = data.weather;
+            if (!daily || daily.length === 0) {
+                return '<div class="forecast-title">No forecast data available</div>';
+            }
+
             let cards = '';
 
-            for (let i = 0; i < 7; i++) {
-                const date = daily.time[i];
-                const code = daily.weather_code[i];
-                const highC = daily.temperature_2m_max[i];
-                const lowC = daily.temperature_2m_min[i];
+            for (let i = 0; i < daily.length; i++) {
+                const day = daily[i];
+                const date = day.date;
+                const code = parseWeatherCode(day.weatherDesc ? (day.weatherDesc[0] ? day.weatherDesc[0].value : '') : '');
+                const highC = parseFloat(day.maxtempC);
+                const lowC = parseFloat(day.mintempC);
 
                 cards += `
                     <div class="forecast-card">
@@ -448,26 +456,25 @@
             }
 
             return `
-                <div class="forecast-title">7-Day Forecast</div>
+                <div class="forecast-title">3-Day Forecast</div>
                 <div class="forecast-row">${cards}</div>
             `;
         }
 
         // Render full output
-        function render(city, currentData, forecastData) {
-            const html = renderCurrent(currentData, city) + renderForecast(forecastData);
+        function render(city, data) {
+            const html = renderCurrent(data, city) + renderForecast(data);
             output.innerHTML = html;
 
             // Unit toggle
             document.getElementById('unitToggle').addEventListener('click', () => {
                 useCelsius = !useCelsius;
-                render(city, currentData, forecastData);
+                render(city, data);
             });
         }
 
-        // Search city name - uses wttr.in which supports CORS
+        // Search city name
         async function searchCity(query) {
-            // wttr.in returns JSON with geolocation data
             const res = await fetch(
                 `https://wttr.in/${encodeURIComponent(query)}?format=j1`,
                 { headers: { 'Accept': 'application/json' } }
@@ -485,69 +492,22 @@
             };
         }
 
-        // Fetch weather data
-        async function fetchWeather(lat, lon) {
-            const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}`
-                + `&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,weather_code,wind_speed_10m`
-                + `&daily=weather_code,temperature_2m_min,temperature_2m_max`
-                + `&timezone=auto&forecast_days=7`;
-
-            const res = await fetch(url);
-            if (!res.ok) {
-                const errText = await res.text();
-                throw new Error(`Weather API error: ${res.status} - ${errText}`);
-            }
-            return res.json();
-        }
-
-        // Main fetch - uses wttr.in which supports CORS (no proxy needed)
+        // Load weather for location
         async function loadWeather(lat, lon) {
             output.innerHTML = '<p class="message">Loading weather data...</p>';
 
             try {
-                // Use wttr.in which supports CORS — returns all data in one call
-                const url = `https://wttr.in/?format=j1&lang=en`;
+                const url = `https://wttr.in/${lat},${lon}?format=j1&lang=en`;
                 const res = await fetch(url);
                 if (!res.ok) throw new Error('Failed to fetch weather data');
                 const data = await res.json();
 
-                // Extract city name from area
-                const area = data.nearest_area && data.nearest_area.length > 0
+                // Extract city name
+                const city = data.nearest_area && data.nearest_area.length > 0
                     ? data.nearest_area[0].areaName[0].value
                     : 'Your Location';
 
-                // Current weather
-                const current = data.current_condition[0];
-                const tempC = parseFloat(current.temp_C);
-                const feelsLikeC = parseFloat(current.FeelsLikeC);
-                const humidity = parseInt(current.humidity);
-                const windKmh = parseInt(current.windspeedKmph);
-                const weatherCode = parseInt(current.weatherCode);
-                const description = current.lang_en ? current.lang_en[0].value : current.weatherDesc[0].value;
-
-                // Build current data object
-                const currentData = {
-                    current: {
-                        temperature_2m: tempC,
-                        apparent_temperature: feelsLikeC,
-                        relative_humidity_2m: humidity,
-                        wind_speed_10m: windKmh,
-                        weather_code: weatherCode,
-                        is_day: parseInt(current.is_day)
-                    }
-                };
-
-                // 7-day forecast (wttr.in uses 'weather' array, not 'daily')
-                const forecastData = {
-                    daily: {
-                        time: data.weather.map(w => w.date),
-                        weather_code: data.weather.map(w => parseInt(w.weatherCode)),
-                        temperature_2m_max: data.weather.map(w => parseFloat(w.maxtempC)),
-                        temperature_2m_min: data.weather.map(w => parseFloat(w.mintempC))
-                    }
-                };
-
-                render(area, currentData, forecastData);
+                render(city, data);
             } catch (err) {
                 output.innerHTML = `<p class="message error">Error: ${err.message}</p>`;
             }
